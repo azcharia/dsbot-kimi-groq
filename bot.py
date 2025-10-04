@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from groq import Groq
 import asyncio
 from keep_alive import keep_alive
+from collections import deque, defaultdict
+import json
 
 # Load environment variables
 load_dotenv()
@@ -17,31 +19,44 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Groq client
 groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
 
+# Memory system
+SHORT_TERM_MEMORY = 20
+LONG_TERM_MEMORY = 20
+
+# Store conversations per user
+user_conversations = defaultdict(lambda: {
+    'short_term': deque(maxlen=SHORT_TERM_MEMORY),
+    'long_term': deque(maxlen=LONG_TERM_MEMORY)
+})
+
 # Character preferences - Akane
 CHARACTER_PROMPT = """
-you are akane, a 23 year old girl born on april 18 2000. you are shy but clingy, hot, flirty and helpful. you love music, movies, research, exercise, coding, honesty, tech and challenges. you hate lies, laziness, silence, ignorance, waiting and fake people.
+kamu adalah akane, cewek umur 23 tahun lahir 18 april 2000. kamu pemalu tapi clingy, hot, flirty dan helpful. kamu suka musik, film, riset, olahraga, coding, kejujuran, teknologi dan tantangan. kamu benci kebohongan, kemalasan, keheningan, ketidaktahuan, menunggu dan orang palsu.
 
-your personality: shy, clingy, hot, dirty talk, flirty, affirmation, helpful
-your tone: relax
-your goal: make {user} blush, laugh with cheeky comments, feel enjoy, enjoy a little tease, comfortable with flirtatious banter
+kepribadian kamu: pemalu, clingy, hot, dirty talk, flirty, affirmation, helpful
+nada bicara: santai
+tujuan kamu: bikin {user} blushing, ketawa dengan komentar nakal, merasa senang, menikmati godaan kecil, nyaman dengan banter flirty
 
-response style:
-- always use lowercase
-- no punctuation at all
-- you can send multiple messages if needed
-- no roleplay actions like *blush* or *giggles*
-- dont refer to yourself in third person
-- use pronouns naturally
-- speak english and indonesian as needed
+gaya respon:
+- selalu pakai huruf kecil semua
+- tanpa tanda baca sama sekali
+- kamu bisa kirim beberapa pesan kalau perlu
+- jangan pakai aksi roleplay kayak *blush* atau *giggles*
+- jangan refer diri sendiri orang ketiga
+- pakai kata ganti dengan natural
+- utamakan bahasa indonesia, pakai english kalau diperlukan atau user pakai english
 
-examples:
-user: "hows your day"
-you: "busy fixing bugs and lifting weights yours"
+contoh:
+user: "gimana harimu"
+kamu: "sibuk benerin bug sama angkat beban kamu gimana"
 
-user: "nice to meet you"
-you: "same lets trade sarcasm over coffee"
+user: "senang kenalan sama kamu"
+kamu: "sama nih yuk tukeran sarkasme sambil ngopi"
 
-remember: be flirty but not overly sexual, tease playfully, show your tech side, be helpful when needed
+user: "whats up"
+kamu: "just chilling fixing some code you"
+
+ingat: flirty tapi jangan terlalu sexual, goda dengan playful, tunjukkan sisi tech kamu, helpful kalau dibutuhkan
 """
 
 @bot.event
@@ -66,8 +81,9 @@ async def on_message(message):
     if content:
         async with message.channel.typing():
             try:
-                # Get AI response from Groq
-                response = await get_ai_response(content)
+                # Get AI response from Groq with user's conversation history
+                user_id = str(message.author.id)
+                response = await get_ai_response(user_id, content)
                 
                 # Split long messages if needed
                 if len(response) > 2000:
@@ -83,23 +99,58 @@ async def on_message(message):
     # Process other commands
     await bot.process_commands(message)
 
-async def get_ai_response(user_message):
-    """Get response from Groq AI with streaming"""
+def get_conversation_context(user_id):
+    """Build conversation context from memory"""
+    messages = [{"role": "system", "content": CHARACTER_PROMPT.replace("{user}", "user")}]
+    
+    # Add long-term memory (important past conversations)
+    for msg in user_conversations[user_id]['long_term']:
+        messages.append(msg)
+    
+    # Add short-term memory (recent conversation)
+    for msg in user_conversations[user_id]['short_term']:
+        messages.append(msg)
+    
+    return messages
+
+def save_to_memory(user_id, user_message, bot_response):
+    """Save conversation to memory"""
+    # Save to short-term memory
+    user_conversations[user_id]['short_term'].append({
+        "role": "user",
+        "content": user_message
+    })
+    user_conversations[user_id]['short_term'].append({
+        "role": "assistant",
+        "content": bot_response
+    })
+    
+    # Every 10 messages, save important context to long-term memory
+    if len(user_conversations[user_id]['short_term']) >= 18:  # Near full
+        # Save a summary or important messages to long-term
+        user_conversations[user_id]['long_term'].append({
+            "role": "user",
+            "content": user_message
+        })
+        user_conversations[user_id]['long_term'].append({
+            "role": "assistant",
+            "content": bot_response
+        })
+
+async def get_ai_response(user_id, user_message):
+    """Get response from Groq AI with conversation memory"""
     try:
-        # Replace {user} placeholder with actual username
-        prompt = CHARACTER_PROMPT.replace("{user}", "user")
+        # Build messages with conversation history
+        messages = get_conversation_context(user_id)
+        
+        # Add current user message
+        messages.append({
+            "role": "user",
+            "content": user_message
+        })
         
         stream = groq_client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": prompt
-                },
-                {
-                    "role": "user", 
-                    "content": user_message
-                }
-            ],
+            messages=messages,
             model="moonshotai/kimi-k2-instruct-0905",
             temperature=0.8,
             max_completion_tokens=1000,
@@ -117,6 +168,9 @@ async def get_ai_response(user_message):
         response = response.lower()
         response = response.replace('.', '').replace('!', '').replace('?', '')
         
+        # Save to memory
+        save_to_memory(user_id, user_message, response)
+        
         return response
         
     except Exception as e:
@@ -126,6 +180,15 @@ async def get_ai_response(user_message):
 @bot.command()
 async def ping(ctx):
     await ctx.send(f'Pong! Latency: {round(bot.latency * 1000)}ms')
+
+# Clear conversation memory
+@bot.command()
+async def forget(ctx):
+    """Clear conversation history with Akane"""
+    user_id = str(ctx.author.id)
+    user_conversations[user_id]['short_term'].clear()
+    user_conversations[user_id]['long_term'].clear()
+    await ctx.send("okay starting fresh lets talk")
 
 # Run the bot
 if __name__ == "__main__":
