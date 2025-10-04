@@ -190,6 +190,15 @@ async def forget(ctx):
     user_conversations[user_id]['long_term'].clear()
     await ctx.send("okay starting fresh lets talk")
 
+# Check memory status
+@bot.command()
+async def memory(ctx):
+    """Check how many messages are stored in memory"""
+    user_id = str(ctx.author.id)
+    short = len(user_conversations[user_id]['short_term'])
+    long = len(user_conversations[user_id]['long_term'])
+    await ctx.send(f"short term: {short} messages\nlong term: {long} messages")
+
 # Run the bot
 if __name__ == "__main__":
     keep_alive()  # Start web server for keep-alive
