@@ -87,6 +87,17 @@ async def on_ready():
     print(f'Bot ID: {bot.user.id}')
 
 @bot.event
+async def on_error(event, *args, **kwargs):
+    """Handle errors gracefully"""
+    print(f'Error in {event}: {args} {kwargs}')
+    # Bot will auto-reconnect, no need to crash
+
+@bot.event
+async def on_disconnect():
+    """Handle disconnection"""
+    print('Bot disconnected, will auto-reconnect...')
+
+@bot.event
 async def on_message(message):
     # Ignore bot's own messages
     if message.author == bot.user:
@@ -115,8 +126,18 @@ async def on_message(message):
                 else:
                     await message.reply(response)
                     
+            except discord.errors.HTTPException as e:
+                # Discord API error (503, rate limit, etc)
+                print(f"Discord API error: {e}")
+                if e.status == 503:
+                    await asyncio.sleep(5)  # Wait before retry
+                # Don't reply to avoid spam
             except Exception as e:
-                await message.reply("uh oh something went wrong with my brain give me a sec")
+                print(f"Error: {e}")
+                try:
+                    await message.reply("uh oh something went wrong give me a sec")
+                except:
+                    pass  # If reply also fails, just skip
     
     # Process other commands
     await bot.process_commands(message)
@@ -228,4 +249,12 @@ if __name__ == "__main__":
     if not token:
         print("Error: DISCORD_TOKEN tidak ditemukan di .env file!")
     else:
-        bot.run(token)
+        while True:
+            try:
+                bot.run(token, reconnect=True)
+            except discord.errors.HTTPException as e:
+                print(f"Discord HTTP error: {e}. Restarting in 10 seconds...")
+                asyncio.sleep(10)
+            except Exception as e:
+                print(f"Fatal error: {e}. Restarting in 30 seconds...")
+                asyncio.sleep(30)
